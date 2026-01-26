@@ -27,35 +27,71 @@ device = torch.device(
 print(f"Using device: {device}")
 
 
+# =========================================
+# Evaluation function
+# =========================================
+def evaluate(model, loader):
+    model.eval()
+    correct, total = 0, 0
+    with torch.no_grad():
+        for images, labels in loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            _, preds = torch.max(outputs, 1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+    return correct / total
+
+
+# =========================================
 # Training function
+# =========================================
 def train_model(
     model_name="vgg16",
     data_dir="../data/",
+    drive_base=None,
     epochs=30,
     batch_size=64,
     lr=0.003,
-    patience=12,  # early stopping patience
-    step_size=5,  # LR decay every 5 epochs
-    gamma=0.1,  # LR decay factor
-    checkpoint_interval=5,  # save checkpoint every N epochs
+    patience=12,
+    step_size=5,
+    gamma=0.1,
+    checkpoint_interval=5,
+    num_classes=4,
+    dropout=0.5,
 ):
+    """
+    Train a model with frozen backbone and custom classifier.
+
+    model_name: "vgg16", "vgg19", "xception", "inceptionresnetv2"
+    data_dir: path to your data folder
+    drive_base: Google Drive base folder to save results
+    """
+    if drive_base is None:
+        drive_base = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
     # 1️⃣ Load data
     train_loader, val_loader, test_loader, class_names = get_data_loaders(
         data_dir, batch_size
     )
 
     # 2️⃣ Create model
-    model = create_model(model_name).to(device)
+    model = create_model(
+        model_name=model_name, num_classes=num_classes, dropout=dropout
+    )
+    model = model.to(device)
 
     # 3️⃣ Loss and optimizer
     criterion = nn.CrossEntropyLoss()
-    optimizer = Adam(model.parameters(), lr=lr)
+    optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
     scheduler = StepLR(optimizer, step_size=step_size, gamma=gamma)
 
-    # Prepare folders
-    os.makedirs("../models", exist_ok=True)
-    os.makedirs("../results", exist_ok=True)
-    metrics_file = f"../results/{model_name}_metrics.csv"
+    # 4️⃣ Prepare Google Drive folders
+    models_dir = os.path.join(drive_base, "models")
+    results_dir = os.path.join(drive_base, "results")
+    os.makedirs(models_dir, exist_ok=True)
+    os.makedirs(results_dir, exist_ok=True)
+    metrics_file = os.path.join(results_dir, f"{model_name}_metrics.csv")
 
     # Training loop
     best_val_acc = 0
@@ -78,7 +114,7 @@ def train_model(
         # Validation
         val_acc = evaluate(model, val_loader)
         print(
-            f"Epoch {epoch+1}/{epochs} | Loss: {running_loss/len(train_loader):.4f} | Val Acc: {val_acc:.4f}"
+            f"[{model_name}] Epoch {epoch+1}/{epochs} | Loss: {running_loss/len(train_loader):.4f} | Val Acc: {val_acc:.4f}"
         )
 
         # Learning rate decay
@@ -88,7 +124,9 @@ def train_model(
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             counter = 0
-            torch.save(model.state_dict(), f"../models/{model_name}_best.pth")
+            torch.save(
+                model.state_dict(), os.path.join(models_dir, f"{model_name}_best.pth")
+            )
         else:
             counter += 1
             if counter >= patience:
@@ -97,7 +135,9 @@ def train_model(
 
         # Checkpoint saving
         if (epoch + 1) % checkpoint_interval == 0:
-            checkpoint_path = f"../models/{model_name}_checkpoint_epoch{epoch+1}.pth"
+            checkpoint_path = os.path.join(
+                models_dir, f"{model_name}_checkpoint_epoch{epoch+1}.pth"
+            )
             torch.save(
                 {
                     "epoch": epoch,
@@ -119,19 +159,5 @@ def train_model(
         )
         pd.DataFrame(metrics_history).to_csv(metrics_file, index=False)
 
-    print("Training finished. Best Val Acc:", best_val_acc)
+    print(f"[{model_name}] Training finished. Best Val Acc:", best_val_acc)
     return model, val_loader, test_loader
-
-
-# Evaluation function
-def evaluate(model, loader):
-    model.eval()
-    correct, total = 0, 0
-    with torch.no_grad():
-        for images, labels in loader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            _, preds = torch.max(outputs, 1)
-            correct += (preds == labels).sum().item()
-            total += labels.size(0)
-    return correct / total
